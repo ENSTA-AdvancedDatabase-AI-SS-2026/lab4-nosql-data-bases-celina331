@@ -1,74 +1,86 @@
 -- TP3 - Exercice 1 : Schéma Cassandra
 -- Use Case : SmartGrid DZ - IoT Électrique
 
--- ─── 1.1 : Créer le Keyspace ──────────────────────────────────────────────────
--- TODO: Créer le keyspace 'smartgrid' avec NetworkTopologyStrategy
--- replication_factor: 3 (pour la production), 1 (pour le TP local)
+-- ─── 1.1 : Création du Keyspace ──────────────────────────────────────────────
 
--- CREATE KEYSPACE smartgrid
--- WITH replication = { ??? };
+CREATE KEYSPACE IF NOT EXISTS smartgrid
+WITH replication = {
+  'class': 'NetworkTopologyStrategy',
+  'datacenter1': 1
+};
 
 USE smartgrid;
 
--- ─── 1.2 : Table mesures_par_capteur ──────────────────────────────────────────
--- Requête cible : "Mesures du capteur X entre T1 et T2"
--- TODO: Définir la PRIMARY KEY correcte
--- Penser : comment éviter les hot partitions avec 10 000 capteurs ?
+-- ─── 1.2 : Table mesures_par_capteur ─────────────────────────────────────────
+-- Requête cible : mesures d’un capteur entre deux dates
 
 CREATE TABLE IF NOT EXISTS mesures_par_capteur (
+
   capteur_id   UUID,
-  -- TODO: Ajouter une colonne pour la date (bucket par jour)
+
+  -- bucket journalier pour éviter hot partition
+  date_jour    DATE,
+
   timestamp    TIMESTAMP,
+
   wilaya       TEXT,
   commune      TEXT,
+
   tension_v    FLOAT,
   courant_a    FLOAT,
   puissance_kw FLOAT,
   frequence_hz FLOAT,
   temperature  FLOAT,
+
   alerte       BOOLEAN,
   code_alerte  TEXT,
-  -- TODO: Définir PRIMARY KEY ((partition), clustering...)
-  PRIMARY KEY (???)
-) WITH CLUSTERING ORDER BY (timestamp DESC)
-  AND default_time_to_live = 7776000;  -- 90 jours en secondes
+
+  PRIMARY KEY ((capteur_id, date_jour), timestamp)
+)
+WITH CLUSTERING ORDER BY (timestamp DESC)
+AND default_time_to_live = 7776000;
 
 
--- ─── 1.3 : Table alertes_par_wilaya ───────────────────────────────────────────
--- Requête cible : "Alertes de la wilaya X le jour Y"
--- TODO: Concevoir la table
+-- ─── 1.3 : Table alertes_par_wilaya ──────────────────────────────────────────
+-- Requête : alertes par wilaya + jour
 
 CREATE TABLE IF NOT EXISTS alertes_par_wilaya (
+
   wilaya       TEXT,
   date_jour    DATE,
+
   timestamp    TIMESTAMP,
   capteur_id   UUID,
+
   code_alerte  TEXT,
   description  TEXT,
-  gravite      INT,   -- 1=info, 2=warning, 3=critique
+  gravite      INT,
   resolue      BOOLEAN,
-  -- TODO: PRIMARY KEY
-  PRIMARY KEY (???)
-) WITH CLUSTERING ORDER BY (timestamp DESC)
-  AND default_time_to_live = 31536000;  -- 1 an
+
+  PRIMARY KEY ((wilaya, date_jour), timestamp, capteur_id)
+)
+WITH CLUSTERING ORDER BY (timestamp DESC)
+AND default_time_to_live = 31536000;
 
 
--- ─── 1.4 : Table agregats_horaires ────────────────────────────────────────────
--- Requête cible : "Consommation moyenne par heure pour le dashboard wilaya"
--- TODO: Concevoir la table avec les bonnes agrégations
+-- ─── 1.4 : Table agregats_horaires ───────────────────────────────────────────
+-- Dashboard consommation par heure
 
 CREATE TABLE IF NOT EXISTS agregats_horaires (
+
   wilaya            TEXT,
   date_heure        TIMESTAMP,
+
   nb_capteurs       INT,
   puissance_moy_kw  FLOAT,
   puissance_max_kw  FLOAT,
   puissance_min_kw  FLOAT,
   nb_alertes        INT,
-  -- TODO: PRIMARY KEY
-  PRIMARY KEY (???)
-) WITH CLUSTERING ORDER BY (date_heure DESC)
-  AND default_time_to_live = 157680000;  -- 5 ans
+
+  PRIMARY KEY (wilaya, date_heure)
+)
+WITH CLUSTERING ORDER BY (date_heure DESC)
+AND default_time_to_live = 157680000;
 
 
 -- Vérification
