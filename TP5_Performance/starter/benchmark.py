@@ -1,32 +1,38 @@
 """
 TP5 - Benchmark Comparatif NoSQL
-Mesurer les performances de Redis, MongoDB, Cassandra, Neo4j
+Redis vs MongoDB vs Cassandra vs Neo4j
 """
+
 import time
 import statistics
 import json
-from typing import Callable, List, Tuple
+import threading
+from typing import Callable
+
 import redis
 from pymongo import MongoClient
 from cassandra.cluster import Cluster
+from cassandra.query import BatchStatement, BatchType
 from neo4j import GraphDatabase
 
-# ─── Utilitaires de mesure ────────────────────────────────────────────────────
+
+# =========================================================
+# 🔧 UTILITAIRE LATENCE
+# =========================================================
 
 def measure_latency(fn: Callable, iterations: int = 1000) -> dict:
-    """
-    Exécuter fn iterations fois et retourner les statistiques
-    """
     latencies = []
+
     for _ in range(iterations):
         start = time.perf_counter()
         fn()
-        latencies.append((time.perf_counter() - start) * 1000)  # en ms
-    
+        latencies.append((time.perf_counter() - start) * 1000)
+
     latencies.sort()
+
     return {
         "mean_ms": statistics.mean(latencies),
-        "p50_ms": latencies[int(0.50 * len(latencies))],
+        "p50_ms": latencies[int(0.5 * len(latencies))],
         "p95_ms": latencies[int(0.95 * len(latencies))],
         "p99_ms": latencies[int(0.99 * len(latencies))],
         "max_ms": max(latencies),
@@ -34,79 +40,166 @@ def measure_latency(fn: Callable, iterations: int = 1000) -> dict:
     }
 
 
-def print_results(name: str, results: dict):
-    print(f"\n{'='*50}")
-    print(f" {name}")
-    print(f"{'='*50}")
-    for k, v in results.items():
-        print(f"  {k:20s}: {v:.2f}")
+def print_results(name, res):
+    print("\n" + "=" * 50)
+    print(name)
+    print("=" * 50)
+    for k, v in res.items():
+        print(f"{k:20s}: {v:.2f}")
 
 
-# ─── Ex1 : Benchmark Écriture ─────────────────────────────────────────────────
+# =========================================================
+# 🟥 REDIS BENCHMARK
+# =========================================================
 
-def benchmark_write_redis(n: int = 100_000):
-    """TODO: Insérer n enregistrements dans Redis et mesurer le débit"""
-    r = redis.Redis(host='localhost', port=6379)
-    # TODO: Implémenter avec pipeline pour maximiser le débit
-    pass
+def benchmark_write_redis(n=10000):
+    r = redis.Redis(host="localhost", port=6379)
+    pipe = r.pipeline()
 
+    start = time.time()
 
-def benchmark_write_mongodb(n: int = 100_000):
-    """TODO: Insérer n documents dans MongoDB et mesurer le débit"""
-    client = MongoClient("mongodb://admin:admin123@localhost:27017/")
-    db = client["benchmark"]
-    # TODO: Implémenter avec bulk_write pour maximiser le débit
-    pass
+    for i in range(n):
+        pipe.set(f"key:{i}", json.dumps({"id": i, "value": i}))
 
+        if i % 1000 == 0:
+            pipe.execute()
 
-def benchmark_write_cassandra(n: int = 100_000):
-    """TODO: Insérer n rows dans Cassandra et mesurer le débit"""
-    # TODO: Utiliser des UNLOGGED BATCH
-    pass
+    pipe.execute()
 
+    print(f"Redis WRITE: {n / (time.time() - start):.0f} ops/sec")
 
-# ─── Ex2 : Benchmark Lecture ─────────────────────────────────────────────────
 
 def benchmark_read_redis():
-    """TODO: Point lookup, range (ZRANGE), complex (pipeline multi-get)"""
-    pass
+    r = redis.Redis(host="localhost", port=6379)
+
+    def fn():
+        r.get("key:500")
+
+    print("Redis READ:", measure_latency(fn))
+
+
+# =========================================================
+# 🟩 MONGODB BENCHMARK
+# =========================================================
+
+def benchmark_write_mongodb(n=10000):
+    client = MongoClient("mongodb://localhost:27017/")
+    db = client["benchmark"]
+    col = db["data"]
+
+    col.drop()
+
+    batch = []
+    start = time.time()
+
+    for i in range(n):
+        batch.append({"_id": i, "value": i})
+
+        if len(batch) == 1000:
+            col.insert_many(batch, ordered=False)
+            batch = []
+
+    if batch:
+        col.insert_many(batch)
+
+    print(f"MongoDB WRITE: {n / (time.time() - start):.0f} ops/sec")
 
 
 def benchmark_read_mongodb():
-    """TODO: find_one, find avec range, aggregate pipeline"""
-    pass
+    client = MongoClient("mongodb://localhost:27017/")
+    col = client["benchmark"]["data"]
+
+    def fn():
+        col.find_one({"_id": 500})
+
+    print("MongoDB READ:", measure_latency(fn))
 
 
-# ─── Ex3 : Charge concurrente ─────────────────────────────────────────────────
+# =========================================================
+# 🟦 CASSANDRA BENCHMARK
+# =========================================================
 
-def benchmark_concurrent(db_fn: Callable, n_clients: int = 50, requests_per_client: int = 200):
-    """
-    TODO: Lancer n_clients threads simultanés
-    Chaque thread effectue requests_per_client requêtes
-    Mesurer les latences globales et la dégradation vs single client
-    """
-    import threading
-    pass
+def benchmark_write_cassandra(n=10000):
+    cluster = Cluster(["localhost"])
+    session = cluster.connect("benchmark")
+
+    query = session.prepare("""
+        INSERT INTO data (id, value)
+        VALUES (?, ?)
+    """)
+
+    start = time.time()
+
+    batch = BatchStatement(batch_type=BatchType.UNLOGGED)
+    count = 0
+
+    for i in range(n):
+        batch.add(query, (i, i))
+        count += 1
+
+        if count == 50:
+            session.execute(batch)
+            batch = BatchStatement(batch_type=BatchType.UNLOGGED)
+            count = 0
+
+    if count:
+        session.execute(batch)
+
+    print(f"Cassandra WRITE: {n / (time.time() - start):.0f} ops/sec")
 
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
+# =========================================================
+# ⚡ CONCURRENCY BENCHMARK
+# =========================================================
+
+def benchmark_concurrent(db_fn, n_clients=50, requests_per_client=200):
+    latencies = []
+
+    def worker():
+        for _ in range(requests_per_client):
+            start = time.perf_counter()
+            db_fn()
+            latencies.append(time.perf_counter() - start)
+
+    threads = []
+    start = time.time()
+
+    for _ in range(n_clients):
+        t = threading.Thread(target=worker)
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
+
+    elapsed = time.time() - start
+
+    print("\n⚡ CONCURRENCY TEST")
+    print(f"Total requests: {n_clients * requests_per_client}")
+    print(f"Time: {elapsed:.2f}s")
+    print(f"Throughput: {(n_clients * requests_per_client)/elapsed:.0f} req/sec")
+    print(f"Avg latency: {statistics.mean(latencies)*1000:.2f} ms")
+
+
+# =========================================================
+# 🚀 MAIN
+# =========================================================
 
 if __name__ == "__main__":
-    print("🚀 Benchmark NoSQL - Comparatif des 4 technologies")
-    print("="*60)
-    
-    N = 10_000  # Réduire pour les tests, 100_000 pour la production
-    
-    print(f"\n📝 Benchmark Écriture ({N:,} enregistrements)")
+    print("🚀 TP5 - NoSQL Benchmark")
+
+    N = 10000
+
+    print("\n🟥 REDIS")
     benchmark_write_redis(N)
-    benchmark_write_mongodb(N)
-    benchmark_write_cassandra(N)
-    
-    print(f"\n📖 Benchmark Lecture (1,000 requêtes)")
     benchmark_read_redis()
+
+    print("\n🟩 MONGODB")
+    benchmark_write_mongodb(N)
     benchmark_read_mongodb()
-    
-    print(f"\n⚡ Test Charge Concurrente (50 clients)")
-    # benchmark_concurrent(...)
-    
-    print("\n✅ Benchmark terminé ! Consultez RAPPORT.md pour l'analyse.")
+
+    print("\n🟦 CASSANDRA")
+    benchmark_write_cassandra(N)
+
+    print("\n⚡ CONCURRENCY (Redis example)")
+    benchmark_concurrent(lambda: redis.Redis().get("key:500"))
