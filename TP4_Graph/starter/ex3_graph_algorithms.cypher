@@ -1,64 +1,93 @@
-// TP4 - Exercice 3 : Algorithmes de Graphe avec GDS
-// Prérequis : Plugin Graph Data Science installé (inclus dans docker-compose)
+////////////////////////////////////////////////////////////
+// TP4 - Exercice 3 : Algorithmes de Graphe (GDS)
+////////////////////////////////////////////////////////////
 
-// ─── 3.1 : Plus court chemin ──────────────────────────────────────────────────
-// "Comment Ahmed peut-il rencontrer Yasmina ?"
+
+// ─── 3.1 : Plus court chemin ─────────────────────────────
 MATCH p = shortestPath(
   (a:Etudiant {prenom: "Ahmed"})-[:CONNAIT*..10]-(b:Etudiant {prenom: "Yasmina"})
 )
-RETURN [n IN nodes(p) | n.prenom + " (" + n.universite + ")"] AS chemin,
-       length(p) AS nb_intermediaires;
+RETURN
+[
+  n IN nodes(p) |
+  n.prenom + " (" + n.universite + ")"
+] AS chemin,
+length(p) AS distance;
 
 
-// ─── 3.2 : Centralité de degré ────────────────────────────────────────────────
-// Créer la projection du graphe en mémoire
+// ─── 3.2 : Centralité de degré ───────────────────────────
+
+// Création du graphe projeté
 CALL gds.graph.project(
   'reseau_social',
   'Etudiant',
   'CONNAIT'
 );
 
-// TODO: Calculer et afficher le top 10 des étudiants les plus connectés
+// Calcul degré (top connectés)
 CALL gds.degree.stream('reseau_social')
 YIELD nodeId, score
-RETURN gds.util.asNode(nodeId).prenom AS etudiant,
-       gds.util.asNode(nodeId).universite AS universite,
-       score AS nb_connexions
-ORDER BY score DESC
+RETURN
+gds.util.asNode(nodeId).prenom AS etudiant,
+gds.util.asNode(nodeId).universite AS universite,
+score AS nb_connexions
+ORDER BY nb_connexions DESC
 LIMIT 10;
 
 
-// ─── 3.3 : Détection de communautés (Louvain) ────────────────────────────────
-// TODO: Exécuter l'algorithme de Louvain et afficher les communautés
+// ─── 3.3 : Détection de communautés (Louvain) ────────────
+
 CALL gds.louvain.stream('reseau_social')
 YIELD nodeId, communityId
 WITH communityId, collect(gds.util.asNode(nodeId).prenom) AS membres
-RETURN communityId,
-       size(membres) AS taille,
-       membres[0..5] AS exemple_membres
-ORDER BY taille DESC;
+RETURN
+communityId,
+size(membres) AS taille_communaute,
+membres[0..5] AS exemples
+ORDER BY taille_communaute DESC;
 
 
-// ─── 3.4 : Recommandation de contacts ────────────────────────────────────────
-// "Qui Ahmed devrait-il connaître ?" 
-// Critères : amis en commun + même cours + même filière
+// ─── 3.4 : Recommandation de contacts ─────────────────────
 
-// TODO: Écrire la requête de recommandation
-// Score = nb_amis_communs * 3 + nb_cours_communs * 2 + (meme_filiere ? 1 : 0)
-MATCH (moi:Etudiant {prenom: "Ahmed"})
-// TODO: Compléter la requête
-RETURN ??? AS suggestion, ??? AS score
+MATCH (moi:Etudiant {prenom: "Ahmed"})-[:CONNAIT]-(ami:Etudiant)
+WITH moi, collect(DISTINCT ami) AS amis
+
+MATCH (suggestion:Etudiant)
+WHERE suggestion <> moi
+AND NOT (moi)-[:CONNAIT]-(suggestion)
+
+// amis en commun
+OPTIONAL MATCH (moi)-[:CONNAIT]-(a1:Etudiant)-[:CONNAIT]-(suggestion)
+WITH moi, suggestion, count(a1) AS amis_communs
+
+// même filière bonus
+WITH moi, suggestion, amis_communs,
+CASE WHEN moi.filiere = suggestion.filiere THEN 1 ELSE 0 END AS meme_filiere
+
+// score final
+WITH suggestion,
+(amis_communs * 3 + meme_filiere) AS score
+
+RETURN
+suggestion.prenom AS suggestion,
+suggestion.universite AS universite,
+score
 ORDER BY score DESC
 LIMIT 5;
 
 
-// ─── 3.5 : Chemin de compétences ─────────────────────────────────────────────
-// "Quels cours mènent à Machine Learning ?"
-MATCH path = (debut:Cours)-[:REQUIERT*]->(but:Competence {nom: "Machine Learning"})
-RETURN [n IN nodes(path) | 
-  CASE WHEN n:Cours THEN n.intitule ELSE n.nom END
+// ─── 3.5 : Chemin de compétences ─────────────────────────
+
+MATCH path = (c:Cours)-[:REQUIERT*]->(comp:Competence {nom: "Machine Learning"})
+RETURN
+[
+  n IN nodes(path) |
+  CASE
+    WHEN n:Cours THEN n.intitule
+    ELSE n.nom
+  END
 ] AS parcours_apprentissage;
 
 
-// Nettoyage
+// ─── Nettoyage graphe projeté ────────────────────────────
 CALL gds.graph.drop('reseau_social');
